@@ -128,7 +128,13 @@ class FlutterBlue {
       },
     );
 
-    await _channel.invokeMethod('connect', request.writeToBuffer());
+    try {
+      await _channel.invokeMethod('connect', request.writeToBuffer()).catchError((e){
+        throw Exception("peripheral not found");
+      });
+    }catch(e){
+      throw Exception("peripheral not found");
+    }
 
     subscription = device.onStateChanged().listen(
       (data) {
