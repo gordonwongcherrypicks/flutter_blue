@@ -39,8 +39,8 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 @property(nonatomic, retain) FlutterBlueStreamHandler *descriptorReadStreamHandler;
 @property(nonatomic, retain) CBCentralManager *centralManager;
 @property(nonatomic) NSMutableDictionary *scannedPeripherals;
-@property(nonatomic) NSMutableArray *servicesThatNeedDiscovered;
-@property(nonatomic) NSMutableArray *characteristicsThatNeedDiscovered;
+@property(nonatomic) NSMutableDictionary<NSString*, NSMutableArray*> *servicesThatNeedDiscoveredMap;
+@property(nonatomic) NSMutableDictionary<NSString*, NSMutableArray*> *characteristicsThatNeedDiscoveredMap;
 @property(nonatomic) LogLevel logLevel;
 @end
 
@@ -58,35 +58,35 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   instance.channel = channel;
   instance.centralManager = [[CBCentralManager alloc] initWithDelegate:instance queue:nil];
   instance.scannedPeripherals = [NSMutableDictionary new];
-  instance.servicesThatNeedDiscovered = [NSMutableArray new];
-  instance.characteristicsThatNeedDiscovered = [NSMutableArray new];
+  instance.servicesThatNeedDiscoveredMap = [NSMutableDictionary new];
+  instance.characteristicsThatNeedDiscoveredMap = [NSMutableDictionary new];
   instance.logLevel = emergency;
-  
+
   // STATE
   FlutterBlueStreamHandler* stateStreamHandler = [[FlutterBlueStreamHandler alloc] init];
   [stateChannel setStreamHandler:stateStreamHandler];
   instance.stateStreamHandler = stateStreamHandler;
-  
+
   // SCAN RESULTS
   FlutterBlueStreamHandler* scanResultStreamHandler = [[FlutterBlueStreamHandler alloc] init];
   [scanResultChannel setStreamHandler:scanResultStreamHandler];
   instance.scanResultStreamHandler = scanResultStreamHandler;
-  
+
   // SERVICES DISCOVERED
   FlutterBlueStreamHandler* servicesDiscoveredStreamHandler = [[FlutterBlueStreamHandler alloc] init];
   [servicesDiscoveredChannel setStreamHandler:servicesDiscoveredStreamHandler];
   instance.servicesDiscoveredStreamHandler = servicesDiscoveredStreamHandler;
-  
+
   // CHARACTERISTIC READ
   FlutterBlueStreamHandler* characteristicReadStreamHandler = [[FlutterBlueStreamHandler alloc] init];
   [characteristicReadChannel setStreamHandler:characteristicReadStreamHandler];
   instance.characteristicReadStreamHandler = characteristicReadStreamHandler;
-  
+
   // DESCRIPTOR READ
   FlutterBlueStreamHandler* descriptorReadStreamHandler = [[FlutterBlueStreamHandler alloc] init];
   [descriptorReadChannel setStreamHandler:descriptorReadStreamHandler];
   instance.descriptorReadStreamHandler = descriptorReadStreamHandler;
-  
+
   [registrar addMethodCallDelegate:instance channel:channel];
 }
 
@@ -167,8 +167,8 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
     @try {
       CBPeripheral *peripheral = [self findPeripheral:remoteId];
       // Clear helper arrays
-      [_servicesThatNeedDiscovered removeAllObjects];
-      [_characteristicsThatNeedDiscovered removeAllObjects ];
+      [_servicesThatNeedDiscoveredMap removeAllObjects];
+      [_characteristicsThatNeedDiscoveredMap removeAllObjects];
       [peripheral discoverServices:nil];
       result(nil);
     } @catch(FlutterError *e) {
@@ -389,7 +389,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   NSLog(@"didConnectPeripheral");
   // Register self as delegate for peripheral
   peripheral.delegate = self;
-  
+
   // Send connection state
   [_channel invokeMethod:@"DeviceState" arguments:[self toFlutterData:[self toDeviceStateProto:peripheral state:peripheral.state]]];
 }
@@ -398,7 +398,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
   NSLog(@"didDisconnectPeripheral");
   // Unregister self as delegate for peripheral, not working #42
   peripheral.delegate = nil;
-  
+
   // Send connection state
   [_channel invokeMethod:@"DeviceState" arguments:[self toFlutterData:[self toDeviceStateProto:peripheral state:peripheral.state]]];
 }
@@ -413,7 +413,7 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error {
   NSLog(@"didDiscoverServices");
   // Loop through and discover characteristics and secondary services
-  [_servicesThatNeedDiscovered addObjectsFromArray:peripheral.services];
+  _servicesThatNeedDiscoveredMap[[peripheral.identifier UUIDString]] = [NSMutableArray arrayWithArray:peripheral.services];
   for(CBService *s in [peripheral services]) {
     NSLog(@"Found service: %@", [s.UUID UUIDString]);
     [peripheral discoverCharacteristics:nil forService:s];
@@ -424,17 +424,17 @@ typedef NS_ENUM(NSUInteger, LogLevel) {
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error {
   NSLog(@"didDiscoverCharacteristicsForService");
   // Loop through and discover descriptors for characteristics
-  [_servicesThatNeedDiscovered removeObject:service];
-  [_characteristicsThatNeedDiscovered addObjectsFromArray:service.characteristics];
+    [_servicesThatNeedDiscoveredMap[[peripheral.identifier UUIDString]] removeObject:service];
+  _characteristicsThatNeedDiscoveredMap[[peripheral.identifier UUIDString]] = [NSMutableArray arrayWithArray: service.characteristics];
   for(CBCharacteristic *c in [service characteristics]) {
     [peripheral discoverDescriptorsForCharacteristic:c];
   }
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverDescriptorsForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
-  NSLog(@"didDiscoverDescriptorsForCharacteristic");
-  [_characteristicsThatNeedDiscovered removeObject:characteristic];
-  if(_servicesThatNeedDiscovered.count > 0 || _characteristicsThatNeedDiscovered.count > 0) {
+    NSLog(@"didDiscoverDescriptorsForCharacteristic: %@, pending discovery count: %lu", [peripheral.identifier UUIDString], [_characteristicsThatNeedDiscoveredMap[[peripheral.identifier UUIDString]] count]);
+  [_characteristicsThatNeedDiscoveredMap[[peripheral.identifier UUIDString]] removeObject:characteristic];
+  if(_servicesThatNeedDiscoveredMap[[peripheral.identifier UUIDString]].count > 0 || _characteristicsThatNeedDiscoveredMap[[peripheral.identifier UUIDString]].count > 0) {
     // Still discovering
     return;
   }
