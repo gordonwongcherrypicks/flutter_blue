@@ -4,10 +4,20 @@
 
 part of flutter_blue;
 
+class Pair<A,B>{
+  final A key;
+  final B value;
+
+  Pair({this.value, this.key});
+}
+
 class BluetoothDevice {
   final DeviceIdentifier id;
   final String name;
   final BluetoothDeviceType type;
+
+  static StreamController<Pair<String, List<BluetoothService>>> _servicesDiscoveryStreamController;
+  static StreamController<Pair<protos.ReadCharacteristicResponse, List<int>>> _readCharacteristicsStreamController;
 
   BluetoothDevice(
       {@required this.id, this.name, this.type = BluetoothDeviceType.unknown});
@@ -19,18 +29,62 @@ class BluetoothDevice {
 
   /// Discovers services offered by the remote device as well as their characteristics and descriptors
   Future<List<BluetoothService>> discoverServices() async {
-    var response = FlutterBlue.instance._servicesDiscoveredChannel
-        .receiveBroadcastStream()
-        .map((buffer) => new protos.DiscoverServicesResult.fromBuffer(buffer))
-        .where((p) => p.remoteId == id.toString())
-        .map((p) => p.services)
-        .map((s) => s.map((p) => new BluetoothService.fromProto(p)).toList())
-        .first;
+    print("[discover services] starting: $name, ${id
+        .toString()}, $hashCode, timestamp:${DateTime
+        .now()
+        .millisecondsSinceEpoch}");
 
     await FlutterBlue.instance._channel
-        .invokeMethod('discoverServices', id.toString());
+        .invokeMethod('discoverServices', id.toString())
+        .catchError((e) {
+      print("[discover services] Exception caught: $name, ${id
+          .toString()}, $hashCode, timestamp:${DateTime
+          .now()
+          .millisecondsSinceEpoch}");
+    });
+    print("[discover services] started: $name, ${id
+        .toString()}, $hashCode, timestamp:${DateTime
+        .now()
+        .millisecondsSinceEpoch}");
 
-    return response;
+
+    _listenServicesDiscoveryBroadcast();
+
+    await for (Pair<String,
+        List<BluetoothService>> p in _servicesDiscoveryStreamController
+        .stream) {
+      if (p.key == id.toString()) {
+        print("[discover services] found services remote id:${p
+            .key}, ${id.toString()}, $hashCode, timestamp:${DateTime
+            .now()
+            .millisecondsSinceEpoch}");
+        return p.value;
+      }
+    }
+  }
+
+  static void _listenServicesDiscoveryBroadcast() async{
+    if(_servicesDiscoveryStreamController == null) {
+      _servicesDiscoveryStreamController =
+          StreamController.broadcast(onListen: () {
+
+          }, onCancel: () {
+            _servicesDiscoveryStreamController?.close();
+            _servicesDiscoveryStreamController = null;
+          });
+    }
+    await for(var buffer in FlutterBlue.instance._servicesDiscoveredChannel
+        .receiveBroadcastStream()) {
+      var p = new protos.DiscoverServicesResult.fromBuffer(buffer);
+      print("[discover services] broadcast services remote id:${p
+          .remoteId}, timestamp:${DateTime
+          .now()
+          .millisecondsSinceEpoch}");
+      _servicesDiscoveryStreamController.sink.add(Pair(key: p.remoteId,
+          value: p.services.map((p) =>
+          new BluetoothService.fromProto(p)).toList()));
+    }
+
   }
 
   /// Returns a list of Bluetooth GATT services offered by the remote device
@@ -56,17 +110,35 @@ class BluetoothDevice {
     await FlutterBlue.instance._channel
         .invokeMethod('readCharacteristic', request.writeToBuffer());
 
-    return await FlutterBlue.instance._characteristicReadChannel
-        .receiveBroadcastStream()
-        .map((buffer) =>
-            new protos.ReadCharacteristicResponse.fromBuffer(buffer))
-        .where((p) =>
-            (p.remoteId == request.remoteId) &&
-            (p.characteristic.uuid == request.characteristicUuid) &&
-            (p.characteristic.serviceUuid == request.serviceUuid))
-        .map((p) => p.characteristic.value)
-        .first
-        .then((d) => characteristic.value = d);
+
+    _listenReadCharacteristicsBroadcast();
+
+    await for(Pair<protos.ReadCharacteristicResponse, List<int>> p in _readCharacteristicsStreamController.stream ){
+      if(p.key.remoteId == request.remoteId &&
+          p.key.characteristic.uuid == request.characteristicUuid &&
+          p.key.characteristic.serviceUuid == request.serviceUuid){
+        characteristic.value = p.value;
+        return p.value;
+      }
+    }
+  }
+
+  static void _listenReadCharacteristicsBroadcast() async{
+    if(_readCharacteristicsStreamController == null) {
+      _readCharacteristicsStreamController =
+          StreamController.broadcast(onListen: () {
+
+          }, onCancel: () {
+            _readCharacteristicsStreamController?.close();
+            _readCharacteristicsStreamController = null;
+          });
+    }
+    await for(var buffer in FlutterBlue.instance._characteristicReadChannel
+        .receiveBroadcastStream()) {
+      var p = new protos.ReadCharacteristicResponse.fromBuffer(buffer);
+      _readCharacteristicsStreamController.sink.add(Pair(key: p,
+          value: p.characteristic.value));
+    }
   }
 
   /// Retrieves the value of a specified descriptor
